@@ -1,0 +1,7 @@
+{
+  "name": "PetCare Hub",
+  "description": "Your AI assistant for a happier, healthier pet! Identify breeds, get personalized training, nutrition advice, and track health.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
