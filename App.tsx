@@ -82,6 +82,51 @@ const App: React.FC = () => {
   const [petAge, setPetAge] = useState('');
   const [petGender, setPetGender] = useState<'Male' | 'Female'>('Male');
 
+  // --- Image Compression Helper ---
+  const compressImage = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+
+          // Max dimensions (e.g., 800px width is sufficient for profiles)
+          const MAX_WIDTH = 800;
+          const MAX_HEIGHT = 800;
+          
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          ctx?.drawImage(img, 0, 0, width, height);
+
+          // Compress to JPEG at 70% quality
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          resolve(dataUrl);
+        };
+        img.onerror = (err) => reject(err);
+      };
+      reader.onerror = (err) => reject(err);
+    });
+  };
+
   // --- Effects ---
 
   // 1. Initial Load & Auth Listener
@@ -106,7 +151,10 @@ const App: React.FC = () => {
          setPet(null);
          setHealthRecords([]);
          setWeightRecords([]);
-         setView(ViewState.WELCOME);
+         
+         // Only redirect to WELCOME if we aren't currently on the language selection screen.
+         // This ensures new users see the Language Select first.
+         setView(current => current === ViewState.LANGUAGE_SELECT ? ViewState.LANGUAGE_SELECT : ViewState.WELCOME);
       }
     });
 
@@ -271,19 +319,21 @@ const App: React.FC = () => {
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      const base64 = reader.result as string;
-      setTempImage(base64);
-      setIsAnalyzing(true);
-      
-      const result = await identifyPetFromImage(base64);
-      setTempSpecies(result.species);
-      setTempBreed(result.breed);
-      setIsAnalyzing(false);
-    };
-    reader.readAsDataURL(file);
+    
+    // Compression
+    try {
+        const compressedBase64 = await compressImage(file);
+        setTempImage(compressedBase64);
+        setIsAnalyzing(true);
+        
+        const result = await identifyPetFromImage(compressedBase64);
+        setTempSpecies(result.species);
+        setTempBreed(result.breed);
+        setIsAnalyzing(false);
+    } catch (e) {
+        console.error("Analysis failed", e);
+        setIsAnalyzing(false);
+    }
   };
 
   const completeRegistration = async () => {
@@ -336,9 +386,8 @@ const App: React.FC = () => {
     const file = event.target.files?.[0];
     if (!file || !pet) return;
 
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      const base64 = reader.result as string;
+    try {
+      const base64 = await compressImage(file);
       
       // Optimistic update
       setPet({ ...pet, photoUrl: base64 });
@@ -354,8 +403,9 @@ const App: React.FC = () => {
           .update({ photo_url: publicUrl })
           .eq('id', pet.id);
       }
-    };
-    reader.readAsDataURL(file);
+    } catch (e) {
+      console.error("Photo update failed", e);
+    }
   };
 
   // --- Data update handlers passed to components ---
