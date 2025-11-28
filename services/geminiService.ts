@@ -2,8 +2,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { Pet, Language, TrainingGuide } from "../types";
 
 // Initialize the client
-// Changed from process.env.API_KEY to import.meta.env.VITE_GEMINI_API_KEY for Vite/Vercel support
-const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const identifyPetFromImage = async (base64Image: string): Promise<{ species: string; breed: string }> => {
   try {
