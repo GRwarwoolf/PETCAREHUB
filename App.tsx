@@ -32,7 +32,8 @@ import {
   LogOut,
   Mail,
   Lock,
-  Loader2
+  Loader2,
+  Ghost
 } from 'lucide-react';
 
 // Custom Minimal Logo Component
@@ -55,6 +56,7 @@ const App: React.FC = () => {
   const [view, setView] = useState<ViewState>(ViewState.LANGUAGE_SELECT);
   const [lang, setLang] = useState<Language>('en'); 
   const [session, setSession] = useState<any>(null);
+  const [isGuest, setIsGuest] = useState<boolean>(false);
   const [loadingData, setLoadingData] = useState(false);
 
   // Data State
@@ -94,9 +96,9 @@ const App: React.FC = () => {
           const canvas = document.createElement('canvas');
           const ctx = canvas.getContext('2d');
 
-          // Max dimensions (e.g., 800px width is sufficient for profiles)
-          const MAX_WIDTH = 800;
-          const MAX_HEIGHT = 800;
+          // Optimize for mobile upload speed: 600px max width
+          const MAX_WIDTH = 600;
+          const MAX_HEIGHT = 600;
           
           let width = img.width;
           let height = img.height;
@@ -117,8 +119,8 @@ const App: React.FC = () => {
           canvas.height = height;
           ctx?.drawImage(img, 0, 0, width, height);
 
-          // Compress to JPEG at 70% quality
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          // Compress to JPEG at 60% quality
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
           resolve(dataUrl);
         };
         img.onerror = (err) => reject(err);
@@ -145,21 +147,20 @@ const App: React.FC = () => {
       setSession(session);
       if (session) {
          fetchUserData(session.user.id);
-         // Refresh posts to update "isUserPost" status
+         setIsGuest(false); // If real login happens, disable guest mode
          fetchPosts(); 
-      } else {
+      } else if (!isGuest) {
          setPet(null);
          setHealthRecords([]);
          setWeightRecords([]);
          
          // Only redirect to WELCOME if we aren't currently on the language selection screen.
-         // This ensures new users see the Language Select first.
          setView(current => current === ViewState.LANGUAGE_SELECT ? ViewState.LANGUAGE_SELECT : ViewState.WELCOME);
       }
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [isGuest]);
 
   // 2. Fetch specific user data
   const fetchUserData = async (userId: string) => {
@@ -228,8 +229,6 @@ const App: React.FC = () => {
     // Need current session to determine isUserPost
     const { data: { session: currentSession } } = await supabase.auth.getSession();
     
-    // Updated query to be more explicit about nested resources
-    // Using standard relationship names derived from Foreign Keys
     const { data, error } = await supabase
         .from('posts')
         .select(`
@@ -266,7 +265,6 @@ const App: React.FC = () => {
         setPosts(formattedPosts);
     } else {
       if (error) {
-        // Detailed error logging to see the object content
         console.error("Error fetching posts:", JSON.stringify(error, null, 2));
       }
     }
@@ -289,7 +287,6 @@ const App: React.FC = () => {
                 }
             });
             if (error) throw error;
-            // Auto login usually happens, handled by onAuthStateChange
         } else {
             const { error } = await supabase.auth.signInWithPassword({
                 email,
@@ -303,10 +300,23 @@ const App: React.FC = () => {
     }
   };
 
+  const handleGuestLogin = () => {
+    setIsGuest(true);
+    setView(ViewState.PET_ID);
+  };
+
   const handleLogout = async () => {
-    await supabase.auth.signOut();
-    setPet(null);
-    setView(ViewState.WELCOME);
+    if (isGuest) {
+      setIsGuest(false);
+      setPet(null);
+      setHealthRecords([]);
+      setWeightRecords([]);
+      setView(ViewState.WELCOME);
+    } else {
+      await supabase.auth.signOut();
+      setPet(null);
+      setView(ViewState.WELCOME);
+    }
   };
 
   // --- App Logic Handlers ---
@@ -337,12 +347,29 @@ const App: React.FC = () => {
   };
 
   const completeRegistration = async () => {
-    if (!tempImage || !petName || !petAge || !session) return;
+    if (!tempImage || !petName || !petAge || (!session && !isGuest)) return;
     setAuthLoading(true);
 
     try {
-        // Upload image to Supabase Storage first
         let photoUrl = tempImage;
+
+        // If Guest, skip upload and DB insert, just set state locally
+        if (isGuest) {
+           setPet({
+                id: 'guest-pet-' + Date.now(),
+                name: petName,
+                age: Number(petAge),
+                gender: petGender,
+                species: tempSpecies as 'Dog' | 'Cat',
+                breed: tempBreed,
+                photoUrl: tempImage // Use base64 locally
+            });
+            setView(ViewState.DASHBOARD);
+            setAuthLoading(false);
+            return;
+        }
+
+        // Real User Logic
         const uploadedUrl = await uploadImage('profiles', tempImage);
         if (uploadedUrl) photoUrl = uploadedUrl;
 
@@ -392,6 +419,9 @@ const App: React.FC = () => {
       // Optimistic update
       setPet({ ...pet, photoUrl: base64 });
 
+      // If guest, we are done
+      if (isGuest) return;
+
       // Upload to Storage
       const publicUrl = await uploadImage('profiles', base64);
       
@@ -411,7 +441,11 @@ const App: React.FC = () => {
   // --- Data update handlers passed to components ---
 
   const handleSaveHealthRecord = async (allRecords: HealthRecord[]) => {
-      // Logic to find new or modified records
+      if (isGuest) {
+          setHealthRecords(allRecords);
+          return;
+      }
+
       const newRecord = allRecords.find(r => !healthRecords.find(old => old.id === r.id));
       const modifiedRecord = allRecords.find(r => {
           const old = healthRecords.find(o => o.id === r.id);
@@ -439,11 +473,20 @@ const App: React.FC = () => {
   };
 
   const handleDeleteHealthRecord = async (id: string) => {
+      if (isGuest) {
+          setHealthRecords(prev => prev.filter(r => r.id !== id));
+          return;
+      }
       await supabase.from('health_records').delete().eq('id', id);
       if (pet) fetchHealthRecords(pet.id);
   };
 
   const handleSaveWeightRecord = async (allRecords: WeightRecord[]) => {
+       if (isGuest) {
+           setWeightRecords(allRecords);
+           return;
+       }
+
        const newRecord = allRecords.find(r => !weightRecords.find(old => old.id === r.id));
        const modifiedRecord = allRecords.find(r => {
           const old = weightRecords.find(o => o.id === r.id);
@@ -468,17 +511,17 @@ const App: React.FC = () => {
   };
 
   const handleDeleteWeightRecord = async (id: string) => {
+      if (isGuest) {
+          setWeightRecords(prev => prev.filter(r => r.id !== id));
+          return;
+      }
       await supabase.from('weight_records').delete().eq('id', id);
       if (pet) fetchWeightRecords(pet.id);
   };
 
   const handleUpdatePosts = async (updatedPosts: Post[]) => {
-      // 1. Apply Optimistic Update Immediately
       setPosts(updatedPosts);
-      
-      // 2. Fetch fresh data to ensure consistency (e.g. real IDs for comments)
-      // We debounce or just let it happen in background
-      fetchPosts();
+      if (!isGuest) fetchPosts();
   };
 
 
@@ -582,14 +625,25 @@ const App: React.FC = () => {
                       </button>
                   </form>
 
-                  <div className="mt-4 pt-4 border-t border-gray-100 text-xs text-gray-500">
-                      {authMode === 'login' ? (lang === 'el' ? 'Δεν έχεις λογαριασμό;' : "Don't have an account?") : (lang === 'el' ? 'Έχεις ήδη λογαριασμό;' : "Already have an account?")}
+                  <div className="mt-4 pt-4 border-t border-gray-100 flex flex-col gap-3">
+                      {/* GUEST BUTTON IS HERE NOW */}
                       <button 
-                        onClick={() => { setAuthMode(authMode === 'login' ? 'signup' : 'login'); setAuthError(null); }}
-                        className="ml-1 font-bold text-purple-600 hover:underline"
+                        onClick={handleGuestLogin}
+                        className="w-full py-3 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200 transition flex items-center justify-center gap-2 text-sm"
                       >
-                          {authMode === 'login' ? (lang === 'el' ? 'Εγγραφή' : 'Sign Up') : (lang === 'el' ? 'Σύνδεση' : 'Log In')}
+                         <Ghost size={16} />
+                         {t('auth.guest', lang)}
                       </button>
+
+                      <div className="text-xs text-gray-500 mt-1 text-center">
+                          {authMode === 'login' ? (lang === 'el' ? 'Δεν έχεις λογαριασμό;' : "Don't have an account?") : (lang === 'el' ? 'Έχεις ήδη λογαριασμό;' : "Already have an account?")}
+                          <button 
+                            onClick={() => { setAuthMode(authMode === 'login' ? 'signup' : 'login'); setAuthError(null); }}
+                            className="ml-1 font-bold text-purple-600 hover:underline"
+                          >
+                              {authMode === 'login' ? (lang === 'el' ? 'Εγγραφή' : 'Sign Up') : (lang === 'el' ? 'Σύνδεση' : 'Log In')}
+                          </button>
+                      </div>
                   </div>
               </div>
             </div>
@@ -764,7 +818,18 @@ const App: React.FC = () => {
       case ViewState.AI_CHAT:
         return <AIChat pet={pet!} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} />;
       case ViewState.COMMUNITY:
-        return <Community pet={pet!} lang={lang} globalPosts={posts} onUpdatePosts={handleUpdatePosts} />;
+        return <Community 
+                  pet={pet!} 
+                  lang={lang} 
+                  globalPosts={posts} 
+                  onUpdatePosts={handleUpdatePosts}
+                  isGuest={isGuest}
+                  onGuestLoginRedirect={() => {
+                      setIsGuest(false);
+                      setPet(null);
+                      setView(ViewState.WELCOME);
+                  }}
+                />;
       case ViewState.LEGAL:
         return <LegalView lang={lang} onBack={() => setView(ViewState.PROFILE)} />;
       case ViewState.PROFILE:
@@ -776,11 +841,13 @@ const App: React.FC = () => {
              <div className="p-6 space-y-6 flex-1 overflow-y-auto">
                <div className="bg-white rounded-2xl p-4 shadow-sm flex items-center gap-4">
                  <div className="w-16 h-16 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full flex items-center justify-center text-white text-2xl font-bold">
-                   {session?.user.email?.[0].toUpperCase() || <Users size={32} />}
+                   {isGuest ? <Ghost size={32} /> : (session?.user.email?.[0].toUpperCase() || <Users size={32} />)}
                  </div>
                  <div className="overflow-hidden">
-                   <h3 className="font-bold text-lg truncate">{session?.user.user_metadata?.full_name || 'User'}</h3>
-                   <p className="text-gray-500 text-sm truncate">{session?.user.email}</p>
+                   <h3 className="font-bold text-lg truncate">
+                       {isGuest ? t('profile.guest', lang) : (session?.user.user_metadata?.full_name || 'User')}
+                   </h3>
+                   <p className="text-gray-500 text-sm truncate">{isGuest ? '' : session?.user.email}</p>
                  </div>
                </div>
 

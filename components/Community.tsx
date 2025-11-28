@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import { Pet, Post, Language, Comment } from '../types';
-import { Heart, MessageCircle, Share2, Plus, Image as ImageIcon, X, Send, Loader2, AlertTriangle } from 'lucide-react';
+import { Heart, MessageCircle, Share2, Plus, Image as ImageIcon, X, Send, Loader2, AlertTriangle, Trash2 } from 'lucide-react';
 import { t } from '../services/translations';
 import { validateImageSafety } from '../services/geminiService';
 import { uploadImage, supabase } from '../services/supabaseClient';
@@ -29,6 +29,9 @@ const Community: React.FC<CommunityProps> = ({ pet, lang, globalPosts, onUpdateP
   const [activePostId, setActivePostId] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
   const [sendingComment, setSendingComment] = useState(false);
+
+  // Delete State
+  const [postToDelete, setPostToDelete] = useState<string | null>(null);
 
   const displayedPosts = activeTab === 'feed' 
     ? globalPosts 
@@ -147,6 +150,23 @@ const Community: React.FC<CommunityProps> = ({ pet, lang, globalPosts, onUpdateP
     }
   };
 
+  const handleDeletePost = async () => {
+    if (!postToDelete) return;
+
+    try {
+      const { error } = await supabase.from('posts').delete().eq('id', postToDelete);
+      if (error) throw error;
+
+      // Optimistic update
+      const updated = globalPosts.filter(p => p.id !== postToDelete);
+      onUpdatePosts(updated);
+      setPostToDelete(null);
+    } catch (err) {
+      console.error("Error deleting post:", err);
+      alert("Could not delete post.");
+    }
+  };
+
   const toggleLike = async (postId: string) => {
     // Optimistic UI update
     const updated = globalPosts.map(p => {
@@ -246,7 +266,7 @@ const Community: React.FC<CommunityProps> = ({ pet, lang, globalPosts, onUpdateP
         )}
 
         {displayedPosts.map((post) => (
-          <div key={post.id} className="bg-white rounded-3xl overflow-hidden shadow-sm">
+          <div key={post.id} className="bg-white rounded-3xl overflow-hidden shadow-sm relative group">
             <div className="p-4 flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-gradient-to-br from-pink-200 to-purple-200 flex items-center justify-center text-purple-600 font-bold">
                 {post.user[0]}
@@ -255,7 +275,18 @@ const Community: React.FC<CommunityProps> = ({ pet, lang, globalPosts, onUpdateP
                 <p className="font-semibold text-gray-800 text-sm">{post.user}</p>
                 <p className="text-xs text-gray-500">{post.petName} • {post.breedTag}</p>
               </div>
-              <span className="ml-auto text-xs text-gray-400">{new Date(post.timestamp).toLocaleDateString()}</span>
+              
+              <div className="ml-auto flex items-center gap-2">
+                 <span className="text-xs text-gray-400">{new Date(post.timestamp).toLocaleDateString()}</span>
+                 {post.isUserPost && (
+                    <button 
+                      onClick={() => setPostToDelete(post.id)}
+                      className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition"
+                    >
+                       <Trash2 size={16} />
+                    </button>
+                 )}
+              </div>
             </div>
             
             <div className="relative aspect-square bg-gray-100">
@@ -313,6 +344,35 @@ const Community: React.FC<CommunityProps> = ({ pet, lang, globalPosts, onUpdateP
       >
         <Plus size={32} />
       </button>
+
+      {/* Delete Confirmation Modal */}
+      {postToDelete && (
+         <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+             <div className="bg-white w-full max-w-xs rounded-3xl p-6 shadow-2xl animate-scale-up">
+                 <div className="flex flex-col items-center text-center mb-6">
+                    <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mb-4">
+                        <Trash2 size={32} />
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-900 mb-2">Delete Post?</h3>
+                    <p className="text-gray-500 text-sm">This action cannot be undone.</p>
+                </div>
+                <div className="flex gap-3">
+                    <button 
+                        onClick={() => setPostToDelete(null)}
+                        className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200 transition"
+                    >
+                        {t('btn.cancel', lang)}
+                    </button>
+                    <button 
+                        onClick={handleDeletePost}
+                        className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold shadow-lg hover:bg-red-600 transition"
+                    >
+                        {t('btn.delete', lang)}
+                    </button>
+                </div>
+             </div>
+         </div>
+      )}
 
       {/* New Post Modal */}
       {showNewPostModal && (

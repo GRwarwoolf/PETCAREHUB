@@ -15,9 +15,15 @@ export const supabase = createClient(supabaseUrl, supabaseKey);
  */
 export const uploadImage = async (folder: string, base64Data: string): Promise<string | null> => {
   try {
-    // 1. Convert Base64 to Blob
-    const base64Response = await fetch(base64Data);
-    const blob = await base64Response.blob();
+    // 1. Convert Base64 to Blob using synchronous method (prevents network freeze on mobile)
+    const base64Str = base64Data.split(',')[1];
+    const binaryStr = atob(base64Str);
+    const len = binaryStr.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'image/jpeg' });
     
     // 2. Generate a unique filename
     const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
