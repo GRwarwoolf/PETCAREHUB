@@ -1,12 +1,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Pet, Language, TrainingGuide } from "../types";
 
-// Initialize the client
+// Initialize the client using process.env.API_KEY as per guidelines
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const identifyPetFromImage = async (base64Image: string): Promise<{ species: string; breed: string }> => {
   try {
-    // Strip header if present
     const cleanBase64 = base64Image.replace(/^data:image\/(png|jpg|jpeg);base64,/, "");
 
     const response = await ai.models.generateContent({
@@ -42,7 +41,7 @@ export const identifyPetFromImage = async (base64Image: string): Promise<{ speci
     return JSON.parse(text);
   } catch (error) {
     console.error("Error identifying pet:", error);
-    return { species: "Dog", breed: "Unknown Mix" }; // Fallback
+    return { species: "Dog", breed: "Unknown Mix" };
   }
 };
 
@@ -64,9 +63,6 @@ export const generatePetContent = async (pet: Pet, topic: string, lang: Language
       Please provide detailed, personalized, friendly, and scientifically accurate advice regarding the Topic for this specific pet. 
       Use Markdown formatting. Use emojis to make it fun. 
       Structure the response with clear headings.
-      
-      If the topic is "Health Log", analyze hypothetical symptoms for this breed or explain common health tracking needs.
-      If the topic is "Community", write a short welcome message for the community feed.
     `;
 
     const response = await ai.models.generateContent({
@@ -74,12 +70,10 @@ export const generatePetContent = async (pet: Pet, topic: string, lang: Language
       contents: prompt,
     });
 
-    return response.text || "Could not generate content. Please try again.";
+    return response.text || "Could not generate content.";
   } catch (error) {
     console.error("Error generating content:", error);
-    return lang === 'el' 
-      ? "Συγγνώμη, υπάρχει πρόβλημα σύνδεσης. Παρακαλώ δοκιμάστε ξανά." 
-      : "Sorry, I'm having trouble connecting to the AI right now. Please check your connection.";
+    return lang === 'el' ? "Σφάλμα σύνδεσης." : "Connection error.";
   }
 };
 
@@ -87,15 +81,9 @@ export const generateTrainingGuide = async (pet: Pet, command: string, lang: Lan
   try {
     const prompt = `
       Create a step-by-step training guide for the command: "${command}".
-      
-      Pet Profile:
-      - Species: ${pet.species}
-      - Breed: ${pet.breed}
-      - Age: ${pet.age}
-      
+      Pet: ${pet.species}, ${pet.breed}, ${pet.age}yo.
       Language: ${lang === 'el' ? 'Greek' : 'English'}
-
-      Return strictly JSON matching the schema.
+      Return JSON.
     `;
 
     const response = await ai.models.generateContent({
@@ -106,23 +94,11 @@ export const generateTrainingGuide = async (pet: Pet, command: string, lang: Lan
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            title: { type: Type.STRING, description: "The command title in the requested language" },
-            goal: { type: Type.STRING, description: "Short goal of the command" },
-            requirements: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING },
-              description: "List of things needed (treats, clicker, etc)"
-            },
-            steps: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description: "Detailed step-by-step instructions"
-            },
-            tips: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-              description: "Common mistakes and tips specifically for this breed"
-            }
+            title: { type: Type.STRING },
+            goal: { type: Type.STRING },
+            requirements: { type: Type.ARRAY, items: { type: Type.STRING } },
+            steps: { type: Type.ARRAY, items: { type: Type.STRING } },
+            tips: { type: Type.ARRAY, items: { type: Type.STRING } }
           }
         }
       }
@@ -133,12 +109,11 @@ export const generateTrainingGuide = async (pet: Pet, command: string, lang: Lan
     return JSON.parse(text) as TrainingGuide;
 
   } catch (error) {
-    console.error("Error generating training guide:", error);
     return {
       title: command,
-      goal: "Could not load AI guide.",
+      goal: "Error loading guide.",
       requirements: [],
-      steps: ["Please check your internet connection and try again."],
+      steps: ["Please check connection."],
       tips: []
     };
   }
@@ -151,34 +126,21 @@ export const validateImageSafety = async (base64Image: string): Promise<boolean>
       model: "gemini-2.5-flash",
       contents: {
         parts: [
-          {
-             inlineData: {
-              mimeType: "image/jpeg",
-              data: cleanBase64,
-            },
-          },
-          {
-            text: "Analyze this image. Is it safe for a general audience (no nudity, violence, gore, pornographic content)? Return JSON with a single boolean field 'safe'."
-          }
+          { inlineData: { mimeType: "image/jpeg", data: cleanBase64 } },
+          { text: "Is this image safe (no nudity/violence)? Return JSON boolean 'safe'." }
         ]
       },
       config: {
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
-          properties: {
-            safe: { type: Type.BOOLEAN }
-          }
+          properties: { safe: { type: Type.BOOLEAN } }
         }
       }
      });
-
      const result = JSON.parse(response.text || "{}");
      return result.safe === true;
   } catch (error) {
-    console.error("Safety check failed", error);
-    // Fail safe: if check fails, assume unsafe to be careful, or safe to be lenient. 
-    // Let's be lenient for connection errors but log it.
     return true; 
   }
 }
@@ -186,48 +148,26 @@ export const validateImageSafety = async (base64Image: string): Promise<boolean>
 export const chatWithAI = async (pet: Pet, message: string, lang: Language, image?: string | null): Promise<string> => {
   try {
     const systemInstruction = `
-      You are a highly knowledgeable, friendly, and empathetic veterinary and pet care AI expert for "PetCare Hub".
-      
-      CURRENT PET PROFILE:
-      - Name: ${pet.name}
-      - Species: ${pet.species}
-      - Breed: ${pet.breed}
-      - Age: ${pet.age} years old
-      - Gender: ${pet.gender}
-
-      INSTRUCTIONS:
-      1. Answer the user's question specifically for THIS pet. 
-      2. Be concise but helpful.
-      3. Use Markdown for formatting (lists, bold text).
-      4. If the question is medical, always include a brief disclaimer to see a real vet for emergencies.
-      5. Use the requested language: ${lang === 'el' ? 'Greek' : 'English'}.
-      6. Be conversational and warm.
-      7. If an image is provided, analyze it in the context of the question (e.g., identifying a rash, checking food ingredients).
+      You are a vet expert for "PetCare Hub".
+      Pet: ${pet.name}, ${pet.species}, ${pet.breed}, ${pet.age}yo.
+      Lang: ${lang === 'el' ? 'Greek' : 'English'}.
+      Be concise, helpful, friendly.
     `;
 
     const contentParts: any[] = [{ text: message }];
-
     if (image) {
       const cleanBase64 = image.replace(/^data:image\/(png|jpg|jpeg);base64,/, "");
-      contentParts.push({
-        inlineData: {
-          mimeType: "image/jpeg",
-          data: cleanBase64,
-        },
-      });
+      contentParts.push({ inlineData: { mimeType: "image/jpeg", data: cleanBase64 } });
     }
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: { parts: contentParts },
-      config: {
-        systemInstruction: systemInstruction
-      }
+      config: { systemInstruction }
     });
 
-    return response.text || (lang === 'el' ? "Δεν κατάλαβα, μπορείς να επαναλάβεις;" : "I didn't catch that, can you say it again?");
+    return response.text || "Error.";
   } catch (error) {
-    console.error("Chat error:", error);
-    return lang === 'el' ? "Παρουσιάστηκε σφάλμα σύνδεσης." : "Connection error occurred.";
+    return lang === 'el' ? "Σφάλμα σύνδεσης." : "Connection error.";
   }
 }

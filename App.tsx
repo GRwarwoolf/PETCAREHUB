@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { identifyPetFromImage } from './services/geminiService';
 import { supabase, uploadImage } from './services/supabaseClient';
@@ -33,7 +32,8 @@ import {
   Mail,
   Lock,
   Loader2,
-  Ghost
+  Ghost,
+  Plus
 } from 'lucide-react';
 
 // Custom Minimal Logo Component
@@ -59,11 +59,16 @@ const App: React.FC = () => {
   const [isGuest, setIsGuest] = useState<boolean>(false);
   const [loadingData, setLoadingData] = useState(false);
 
-  // Data State
-  const [pet, setPet] = useState<Pet | null>(null);
+  // Data State - CHANGED TO ARRAY
+  const [pets, setPets] = useState<Pet[]>([]);
+  const [activePetId, setActivePetId] = useState<string | null>(null);
+  
   const [posts, setPosts] = useState<Post[]>([]);
   const [healthRecords, setHealthRecords] = useState<HealthRecord[]>([]);
   const [weightRecords, setWeightRecords] = useState<WeightRecord[]>([]);
+
+  // Derived Active Pet
+  const activePet = pets.find(p => p.id === activePetId) || null;
 
   // Auth Form State
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -133,7 +138,6 @@ const App: React.FC = () => {
 
   // 1. Initial Load & Auth Listener
   useEffect(() => {
-    // Initial fetch of community posts (public)
     fetchPosts();
 
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -147,14 +151,13 @@ const App: React.FC = () => {
       setSession(session);
       if (session) {
          fetchUserData(session.user.id);
-         setIsGuest(false); // If real login happens, disable guest mode
+         setIsGuest(false);
          fetchPosts(); 
       } else if (!isGuest) {
-         setPet(null);
+         setPets([]);
+         setActivePetId(null);
          setHealthRecords([]);
          setWeightRecords([]);
-         
-         // Only redirect to WELCOME if we aren't currently on the language selection screen.
          setView(current => current === ViewState.LANGUAGE_SELECT ? ViewState.LANGUAGE_SELECT : ViewState.WELCOME);
       }
     });
@@ -162,32 +165,35 @@ const App: React.FC = () => {
     return () => subscription.unsubscribe();
   }, [isGuest]);
 
-  // 2. Fetch specific user data
+  // 2. Fetch specific user data (ALL PETS)
   const fetchUserData = async (userId: string) => {
     setLoadingData(true);
     try {
-      // Fetch Pet
-      const { data: pets, error: petError } = await supabase
+      // Fetch ALL Pets
+      const { data: petsData, error: petError } = await supabase
         .from('pets')
         .select('*')
         .eq('owner_id', userId)
-        .limit(1)
-        .single();
+        .order('created_at', { ascending: true });
       
-      if (pets) {
-        setPet({
-            id: pets.id,
-            name: pets.name,
-            species: pets.species as 'Dog' | 'Cat',
-            breed: pets.breed,
-            age: pets.age,
-            gender: pets.gender as 'Male' | 'Female',
-            photoUrl: pets.photo_url
-        });
+      if (petsData && petsData.length > 0) {
+        const mappedPets: Pet[] = petsData.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            species: p.species as 'Dog' | 'Cat',
+            breed: p.breed,
+            age: p.age,
+            gender: p.gender as 'Male' | 'Female',
+            photoUrl: p.photo_url
+        }));
         
-        // If we found a pet, fetch its records
-        fetchHealthRecords(pets.id);
-        fetchWeightRecords(pets.id);
+        setPets(mappedPets);
+        
+        // Select first pet if none selected
+        if (!activePetId) {
+            setActivePetId(mappedPets[0].id);
+        }
+        
         setView(ViewState.DASHBOARD);
       } else {
         // Logged in but no pet -> Go to Pet Creation
@@ -200,6 +206,14 @@ const App: React.FC = () => {
     }
   };
 
+  // 3. Update records when active pet changes
+  useEffect(() => {
+      if (activePetId) {
+          fetchHealthRecords(activePetId);
+          fetchWeightRecords(activePetId);
+      }
+  }, [activePetId]);
+
   const fetchHealthRecords = async (petId: string) => {
     const { data } = await supabase.from('health_records').select('*').eq('pet_id', petId);
     if (data) {
@@ -210,6 +224,8 @@ const App: React.FC = () => {
             title: r.title,
             note: r.note
         })));
+    } else {
+        setHealthRecords([]);
     }
   };
 
@@ -222,11 +238,12 @@ const App: React.FC = () => {
             weight: r.weight,
             note: r.note
         })));
+    } else {
+        setWeightRecords([]);
     }
   };
 
   const fetchPosts = async () => {
-    // Need current session to determine isUserPost
     const { data: { session: currentSession } } = await supabase.auth.getSession();
     
     const { data, error } = await supabase
@@ -263,10 +280,6 @@ const App: React.FC = () => {
             isUserPost: currentSession ? p.user_id === currentSession.user.id : false
         }));
         setPosts(formattedPosts);
-    } else {
-      if (error) {
-        console.error("Error fetching posts:", JSON.stringify(error, null, 2));
-      }
     }
   };
 
@@ -302,19 +315,22 @@ const App: React.FC = () => {
 
   const handleGuestLogin = () => {
     setIsGuest(true);
+    resetPetForm();
     setView(ViewState.PET_ID);
   };
 
   const handleLogout = async () => {
     if (isGuest) {
       setIsGuest(false);
-      setPet(null);
+      setPets([]);
+      setActivePetId(null);
       setHealthRecords([]);
       setWeightRecords([]);
       setView(ViewState.WELCOME);
     } else {
       await supabase.auth.signOut();
-      setPet(null);
+      setPets([]);
+      setActivePetId(null);
       setView(ViewState.WELCOME);
     }
   };
@@ -326,11 +342,24 @@ const App: React.FC = () => {
     setView(ViewState.WELCOME);
   };
 
+  const resetPetForm = () => {
+      setTempImage(null);
+      setTempSpecies('');
+      setTempBreed('');
+      setPetName('');
+      setPetAge('');
+      setPetGender('Male');
+  };
+
+  const startAddNewPet = () => {
+      resetPetForm();
+      setView(ViewState.PET_ID);
+  };
+
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     
-    // Compression
     try {
         const compressedBase64 = await compressImage(file);
         setTempImage(compressedBase64);
@@ -353,17 +382,19 @@ const App: React.FC = () => {
     try {
         let photoUrl = tempImage;
 
-        // If Guest, skip upload and DB insert, just set state locally
+        // If Guest
         if (isGuest) {
-           setPet({
+           const newPet: Pet = {
                 id: 'guest-pet-' + Date.now(),
                 name: petName,
                 age: Number(petAge),
                 gender: petGender,
                 species: tempSpecies as 'Dog' | 'Cat',
                 breed: tempBreed,
-                photoUrl: tempImage // Use base64 locally
-            });
+                photoUrl: tempImage 
+            };
+            setPets(prev => [...prev, newPet]);
+            setActivePetId(newPet.id);
             setView(ViewState.DASHBOARD);
             setAuthLoading(false);
             return;
@@ -390,7 +421,7 @@ const App: React.FC = () => {
         if (error) throw error;
 
         if (data) {
-            setPet({
+            const newPet: Pet = {
                 id: data.id,
                 name: data.name,
                 age: data.age,
@@ -398,7 +429,9 @@ const App: React.FC = () => {
                 species: data.species as 'Dog' | 'Cat',
                 breed: data.breed,
                 photoUrl: data.photo_url
-            });
+            };
+            setPets(prev => [...prev, newPet]);
+            setActivePetId(newPet.id);
             setView(ViewState.DASHBOARD);
         }
     } catch (e: any) {
@@ -411,34 +444,31 @@ const App: React.FC = () => {
 
   const handleDashboardPhotoUpdate = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file || !pet) return;
+    if (!file || !activePet) return;
 
     try {
       const base64 = await compressImage(file);
       
-      // Optimistic update
-      setPet({ ...pet, photoUrl: base64 });
+      // Optimistic update local state
+      setPets(prev => prev.map(p => p.id === activePet.id ? { ...p, photoUrl: base64 } : p));
 
-      // If guest, we are done
       if (isGuest) return;
 
-      // Upload to Storage
       const publicUrl = await uploadImage('profiles', base64);
       
       if (publicUrl) {
-         // Update DB with valid URL
-         setPet({ ...pet, photoUrl: publicUrl });
+         setPets(prev => prev.map(p => p.id === activePet.id ? { ...p, photoUrl: publicUrl } : p));
          await supabase
           .from('pets')
           .update({ photo_url: publicUrl })
-          .eq('id', pet.id);
+          .eq('id', activePet.id);
       }
     } catch (e) {
       console.error("Photo update failed", e);
     }
   };
 
-  // --- Data update handlers passed to components ---
+  // --- Data update handlers ---
 
   const handleSaveHealthRecord = async (allRecords: HealthRecord[]) => {
       if (isGuest) {
@@ -454,7 +484,7 @@ const App: React.FC = () => {
 
       if (newRecord) {
           await supabase.from('health_records').insert({
-              pet_id: pet?.id,
+              pet_id: activePetId,
               type: newRecord.type,
               title: newRecord.title,
               date: newRecord.date,
@@ -469,7 +499,7 @@ const App: React.FC = () => {
           }).eq('id', modifiedRecord.id);
       }
       
-      if (pet) fetchHealthRecords(pet.id);
+      if (activePetId) fetchHealthRecords(activePetId);
   };
 
   const handleDeleteHealthRecord = async (id: string) => {
@@ -478,7 +508,7 @@ const App: React.FC = () => {
           return;
       }
       await supabase.from('health_records').delete().eq('id', id);
-      if (pet) fetchHealthRecords(pet.id);
+      if (activePetId) fetchHealthRecords(activePetId);
   };
 
   const handleSaveWeightRecord = async (allRecords: WeightRecord[]) => {
@@ -495,7 +525,7 @@ const App: React.FC = () => {
 
       if (newRecord) {
           await supabase.from('weight_records').insert({
-              pet_id: pet?.id,
+              pet_id: activePetId,
               weight: newRecord.weight,
               date: newRecord.date,
               note: newRecord.note
@@ -507,7 +537,7 @@ const App: React.FC = () => {
               note: modifiedRecord.note
           }).eq('id', modifiedRecord.id);
       }
-      if (pet) fetchWeightRecords(pet.id);
+      if (activePetId) fetchWeightRecords(activePetId);
   };
 
   const handleDeleteWeightRecord = async (id: string) => {
@@ -516,7 +546,7 @@ const App: React.FC = () => {
           return;
       }
       await supabase.from('weight_records').delete().eq('id', id);
-      if (pet) fetchWeightRecords(pet.id);
+      if (activePetId) fetchWeightRecords(activePetId);
   };
 
   const handleUpdatePosts = async (updatedPosts: Post[]) => {
@@ -626,7 +656,7 @@ const App: React.FC = () => {
                   </form>
 
                   <div className="mt-4 pt-4 border-t border-gray-100 flex flex-col gap-3">
-                      {/* GUEST BUTTON IS HERE NOW */}
+                      {/* GUEST BUTTON IS HERE */}
                       <button 
                         onClick={handleGuestLogin}
                         className="w-full py-3 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200 transition flex items-center justify-center gap-2 text-sm"
@@ -715,6 +745,8 @@ const App: React.FC = () => {
         );
 
       case ViewState.DASHBOARD:
+        if (!activePet) return null; 
+
         return (
           <div className="h-screen bg-gray-50 flex flex-col pb-20 relative">
              {/* Header Component */}
@@ -722,13 +754,35 @@ const App: React.FC = () => {
               <div className="absolute inset-0 bg-gradient-to-br from-[#FF6FD8] to-[#6F9EFF]"></div>
               <div className="relative z-10 flex flex-col items-center">
                 
-                {/* Updated Image Container - Smaller Compact Size */}
+                {/* --- PET SWITCHER CAROUSEL --- */}
+                <div className="flex items-center gap-4 overflow-x-auto w-full justify-center mb-4 no-scrollbar pb-2">
+                    {pets.map(p => (
+                        <button 
+                            key={p.id}
+                            onClick={() => setActivePetId(p.id)}
+                            className={`relative transition-all duration-300 group flex flex-col items-center gap-1 ${activePetId === p.id ? 'scale-105' : 'opacity-70 scale-90'}`}
+                        >
+                            <div className={`w-14 h-14 rounded-full overflow-hidden border-2 ${activePetId === p.id ? 'border-white shadow-lg ring-2 ring-white/30' : 'border-white/50'}`}>
+                                <img src={p.photoUrl} alt={p.name} className="w-full h-full object-cover" />
+                            </div>
+                            {activePetId === p.id && <div className="w-1.5 h-1.5 bg-white rounded-full mt-1 shadow-sm"></div>}
+                        </button>
+                    ))}
+                    <button 
+                        onClick={startAddNewPet}
+                        className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center text-white border-2 border-white/30 backdrop-blur-md hover:bg-white/30 transition shadow-md"
+                    >
+                        <Plus size={24} />
+                    </button>
+                </div>
+
+                {/* Active Pet Big Photo & Details */}
                 <div className="relative mb-3 group">
                   <div 
                     onClick={() => dashboardFileInputRef.current?.click()}
                     className="w-32 h-20 rounded-[1.5rem] border-2 border-white/90 shadow-xl overflow-hidden shrink-0 cursor-pointer active:scale-95 transition-transform"
                   >
-                    {pet?.photoUrl && <img src={pet.photoUrl} alt={pet.name} className="w-full h-full object-cover" />}
+                    {activePet.photoUrl && <img src={activePet.photoUrl} alt={activePet.name} className="w-full h-full object-cover" />}
                     <div className="absolute inset-0 bg-black/10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                         <Camera className="text-white drop-shadow-md opacity-80" size={20} />
                     </div>
@@ -753,10 +807,10 @@ const App: React.FC = () => {
 
                 {/* Name and Breed Side-by-Side */}
                 <div className="flex items-center gap-3 mb-3">
-                   <h1 className="text-2xl font-bold text-white tracking-tight drop-shadow-md">{pet?.name}</h1>
+                   <h1 className="text-2xl font-bold text-white tracking-tight drop-shadow-md">{activePet.name}</h1>
                    <div className="flex items-center gap-1 bg-white/20 backdrop-blur-md px-2 py-1 rounded-lg border border-white/20 shadow-sm">
-                      <span className="text-sm">{pet?.species === 'Dog' ? '🐶' : '🐱'}</span>
-                      <span className="text-white font-medium text-xs tracking-wide">{pet?.breed}</span>
+                      <span className="text-sm">{activePet.species === 'Dog' ? '🐶' : '🐱'}</span>
+                      <span className="text-white font-medium text-xs tracking-wide">{activePet.breed}</span>
                    </div>
                 </div>
 
@@ -768,7 +822,7 @@ const App: React.FC = () => {
                   <div className="p-1.5 bg-white rounded-full text-purple-500 shadow-sm group-hover:scale-110 transition">
                     <Sparkles size={14} fill="currentColor" />
                   </div>
-                  <span className="text-xs font-bold opacity-100 truncate flex-1 text-left">{t('chat.trigger', lang, { name: pet?.name || 'Pet' })}</span>
+                  <span className="text-xs font-bold opacity-100 truncate flex-1 text-left">{t('chat.trigger', lang, { name: activePet.name })}</span>
                 </button>
               </div>
             </div>
@@ -790,21 +844,21 @@ const App: React.FC = () => {
         );
 
       case ViewState.BREED_INFO:
-        return <InfoView title="home.breedInfo" colorFrom="#0CE7FA" colorTo="#0661F5" pet={pet!} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} />;
+        return activePet ? <InfoView title="home.breedInfo" colorFrom="#0CE7FA" colorTo="#0661F5" pet={activePet} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} /> : null;
       case ViewState.TRAINING:
-        return <TrainingView pet={pet!} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} />;
+        return activePet ? <TrainingView pet={activePet} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} /> : null;
       case ViewState.NUTRITION:
-        return <NutritionView pet={pet!} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} />;
+        return activePet ? <NutritionView pet={activePet} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} /> : null;
       case ViewState.SPECIAL_TRAITS:
-        return <InfoView title="home.specialTraits" colorFrom="#FF6EE0" colorTo="#B966F7" pet={pet!} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} />;
+        return activePet ? <InfoView title="home.specialTraits" colorFrom="#FF6EE0" colorTo="#B966F7" pet={activePet} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} /> : null;
       case ViewState.ACTIVITY_IDEAS:
-         return <InfoView title="home.activityIdeas" colorFrom="#A1E9FF" colorTo="#33C3FF" pet={pet!} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} />;
+         return activePet ? <InfoView title="home.activityIdeas" colorFrom="#A1E9FF" colorTo="#33C3FF" pet={activePet} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} /> : null;
       case ViewState.VET_TIPS:
-         return <InfoView title="home.vetTips" colorFrom="#FF7373" colorTo="#FF006E" pet={pet!} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} />;
+         return activePet ? <InfoView title="home.vetTips" colorFrom="#FF7373" colorTo="#FF006E" pet={activePet} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} /> : null;
       case ViewState.HEALTH_LOG:
-         return (
+         return activePet ? (
            <HealthLog 
-             pet={pet!} 
+             pet={activePet} 
              lang={lang} 
              records={healthRecords}
              weightRecords={weightRecords}
@@ -814,22 +868,23 @@ const App: React.FC = () => {
              onDeleteWeight={handleDeleteWeightRecord}
              onBack={() => setView(ViewState.DASHBOARD)} 
            />
-         );
+         ) : null;
       case ViewState.AI_CHAT:
-        return <AIChat pet={pet!} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} />;
+        return activePet ? <AIChat pet={activePet} lang={lang} onBack={() => setView(ViewState.DASHBOARD)} /> : null;
       case ViewState.COMMUNITY:
-        return <Community 
-                  pet={pet!} 
+        return activePet ? <Community 
+                  pet={activePet} 
                   lang={lang} 
                   globalPosts={posts} 
                   onUpdatePosts={handleUpdatePosts}
                   isGuest={isGuest}
                   onGuestLoginRedirect={() => {
                       setIsGuest(false);
-                      setPet(null);
+                      setPets([]);
+                      setActivePetId(null);
                       setView(ViewState.WELCOME);
                   }}
-                />;
+                /> : null;
       case ViewState.LEGAL:
         return <LegalView lang={lang} onBack={() => setView(ViewState.PROFILE)} />;
       case ViewState.PROFILE:
@@ -878,20 +933,17 @@ const App: React.FC = () => {
 
                <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
                  <div className="p-4 border-b border-gray-100 font-medium text-gray-700">{t('profile.petDetails', lang)}</div>
-                 <div className="p-4 space-y-3">
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">{t('petid.name', lang)}</span>
-                      <span className="font-medium">{pet?.name}</span>
+                 {pets.map(p => (
+                    <div key={p.id} className="p-4 space-y-1 border-b border-gray-50 last:border-0">
+                        <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full overflow-hidden border border-gray-200">
+                                <img src={p.photoUrl} className="w-full h-full object-cover" />
+                            </div>
+                            <span className="font-bold text-gray-800">{p.name}</span>
+                            <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full text-gray-500">{p.breed}</span>
+                        </div>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">{t('petid.identified', lang)}</span>
-                      <span className="font-medium">{pet?.breed}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">{t('petid.age', lang)}</span>
-                      <span className="font-medium">{pet?.age}</span>
-                    </div>
-                 </div>
+                 ))}
                </div>
 
                <button 
@@ -912,7 +964,7 @@ const App: React.FC = () => {
       {renderView()}
 
       {/* Bottom Nav */}
-      {pet && view !== ViewState.PET_ID && view !== ViewState.WELCOME && view !== ViewState.LANGUAGE_SELECT && view !== ViewState.AI_CHAT && (
+      {activePet && view !== ViewState.PET_ID && view !== ViewState.WELCOME && view !== ViewState.LANGUAGE_SELECT && view !== ViewState.AI_CHAT && (
         <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white border-t border-gray-100 flex justify-around items-center py-2 z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
           <NavButton 
             icon={<HomeIcon size={18} />} 
