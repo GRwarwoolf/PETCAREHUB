@@ -33,7 +33,9 @@ import {
   Lock,
   Loader2,
   Ghost,
-  Plus
+  Plus,
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
 
 // Custom Minimal Logo Component
@@ -69,6 +71,9 @@ const App: React.FC = () => {
 
   // Derived Active Pet
   const activePet = pets.find(p => p.id === activePetId) || null;
+
+  // Pet Deletion Modal State
+  const [petToDelete, setPetToDelete] = useState<Pet | null>(null);
 
   // Auth Form State
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -442,26 +447,62 @@ const App: React.FC = () => {
     }
   };
 
+  // --- Deletion Logic ---
+  const initiateDeletePet = (pet: Pet) => {
+      setPetToDelete(pet);
+  };
+
+  const confirmDeletePet = async () => {
+      if (!petToDelete) return;
+
+      if (isGuest) {
+          const updatedPets = pets.filter(p => p.id !== petToDelete.id);
+          setPets(updatedPets);
+          if (updatedPets.length > 0) {
+              setActivePetId(updatedPets[0].id);
+          } else {
+              setActivePetId(null);
+              setView(ViewState.PET_ID); // Force new pet creation
+          }
+          setPetToDelete(null);
+          return;
+      }
+
+      try {
+          const { error } = await supabase.from('pets').delete().eq('id', petToDelete.id);
+          if (error) throw error;
+
+          const updatedPets = pets.filter(p => p.id !== petToDelete.id);
+          setPets(updatedPets);
+          
+          if (updatedPets.length > 0) {
+              setActivePetId(updatedPets[0].id);
+          } else {
+              setActivePetId(null);
+              setView(ViewState.PET_ID); // Force new pet creation
+          }
+      } catch (err) {
+          console.error("Error deleting pet:", err);
+          alert("Could not delete pet.");
+      } finally {
+          setPetToDelete(null);
+      }
+  };
+
   const handleDashboardPhotoUpdate = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !activePet) return;
 
     try {
       const base64 = await compressImage(file);
-      
-      // Optimistic update local state
       setPets(prev => prev.map(p => p.id === activePet.id ? { ...p, photoUrl: base64 } : p));
 
       if (isGuest) return;
 
       const publicUrl = await uploadImage('profiles', base64);
-      
       if (publicUrl) {
          setPets(prev => prev.map(p => p.id === activePet.id ? { ...p, photoUrl: publicUrl } : p));
-         await supabase
-          .from('pets')
-          .update({ photo_url: publicUrl })
-          .eq('id', activePet.id);
+         await supabase.from('pets').update({ photo_url: publicUrl }).eq('id', activePet.id);
       }
     } catch (e) {
       console.error("Photo update failed", e);
@@ -889,7 +930,7 @@ const App: React.FC = () => {
         return <LegalView lang={lang} onBack={() => setView(ViewState.PROFILE)} />;
       case ViewState.PROFILE:
         return (
-          <div className="h-screen flex flex-col bg-gray-50 pb-24">
+          <div className="h-screen flex flex-col bg-gray-50 pb-24 relative">
              <div className="bg-white p-6 pt-12 shadow-sm">
                <h2 className="text-2xl font-bold text-gray-800">{t('profile.title', lang)}</h2>
              </div>
@@ -933,15 +974,35 @@ const App: React.FC = () => {
 
                <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
                  <div className="p-4 border-b border-gray-100 font-medium text-gray-700">{t('profile.petDetails', lang)}</div>
+                 {/* DEBUG: Check if pets array is empty */}
+                 {pets.length === 0 && (
+                    <div className="p-4 text-center text-gray-400 text-sm italic">
+                        {lang === 'el' ? 'Δεν βρέθηκαν κατοικίδια.' : 'No pets found.'}
+                    </div>
+                 )}
                  {pets.map(p => (
-                    <div key={p.id} className="p-4 space-y-1 border-b border-gray-50 last:border-0">
-                        <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 rounded-full overflow-hidden border border-gray-200">
+                    <div key={p.id} className="p-4 border-b border-gray-50 last:border-0 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                            <div className="w-12 h-12 rounded-full overflow-hidden border border-gray-200 shrink-0">
                                 <img src={p.photoUrl} className="w-full h-full object-cover" />
                             </div>
-                            <span className="font-bold text-gray-800">{p.name}</span>
-                            <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full text-gray-500">{p.breed}</span>
+                            <div className="min-w-0">
+                                <span className="font-bold text-gray-800 block text-sm truncate">{p.name}</span>
+                                <span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full text-gray-500">{p.breed}</span>
+                            </div>
                         </div>
+                        {/* RED TRASH BUTTON WITH TEXT - Forced visibility */}
+                        <button 
+                            onClick={(e) => { 
+                                e.stopPropagation(); 
+                                e.preventDefault();
+                                initiateDeletePet(p); 
+                            }}
+                            className="flex items-center gap-2 px-3 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 active:scale-95 transition shrink-0 z-10 min-w-[80px] justify-center"
+                        >
+                            <Trash2 size={16} />
+                            <span className="text-xs font-bold uppercase tracking-wide">{t('btn.delete', lang)}</span>
+                        </button>
                     </div>
                  ))}
                </div>
@@ -954,6 +1015,37 @@ const App: React.FC = () => {
                  {t('profile.logout', lang)}
                </button>
              </div>
+
+             {/* Delete Pet Confirmation Modal - Moved to root of View to ensure Z-Index stacking */}
+             {petToDelete && (
+                <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in">
+                    <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl transform scale-100 transition-all">
+                        <div className="flex flex-col items-center text-center mb-6">
+                            <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mb-4">
+                                <Trash2 size={32} />
+                            </div>
+                            <h3 className="text-xl font-bold text-gray-900 mb-2">{t('profile.deletePet', lang)}</h3>
+                            <p className="text-gray-500 text-sm">
+                                {t('profile.deletePetConfirm', lang, { name: petToDelete.name })}
+                            </p>
+                        </div>
+                        <div className="flex gap-3">
+                            <button 
+                                onClick={() => setPetToDelete(null)}
+                                className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200 transition"
+                            >
+                                {t('btn.cancel', lang)}
+                            </button>
+                            <button 
+                                onClick={confirmDeletePet}
+                                className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold shadow-lg hover:bg-red-600 transition"
+                            >
+                                {t('btn.delete', lang)}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+             )}
           </div>
         );
     }
